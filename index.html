@@ -274,13 +274,6 @@ function makeTree(x, z) {
   g.rotation.y = Math.random() * PI;
   scene.add(g);
 }
-const treePos = [
-  [40,-40],[60,-80],[80,-50],[30,-130],[90,-110],[110,-70],
-  [-40,-50],[-60,-90],[-80,-130],[-50,-170],[-100,-100],[-120,-50],
-  [-110,20],[-90,60],[-50,90],[-20,110],[20,90],[50,60],
-  [120,-150],[140,-90],[160,-40],[80,30],[100,70],
-];
-// Use only ASCII arrays (no unicode minus)
 [[40,-40],[60,-80],[80,-50],[30,-130],[90,-110],[110,-70],
  [-40,-50],[-60,-90],[-80,-130],[-50,-170],[-100,-100],[-120,-50],
  [-110,20],[-90,60],[-50,90],[-20,110],[20,90],[50,60],
@@ -303,21 +296,37 @@ function makeFlag(x, z, color) {
 // ─────────────────────────────────────────────
 // Waypoints in world space
 const WAYPOINTS = [
+  // Start/finish straight
   new THREE.Vector3(  0, 0.5,  20),
-  new THREE.Vector3( 40, 0.5,  20),
-  new THREE.Vector3( 70, 0.5, -10),
-  new THREE.Vector3( 90, 0.5, -60),
-  new THREE.Vector3( 80, 0.5,-120),
-  new THREE.Vector3( 40, 0.5,-160),
-  new THREE.Vector3(-10, 0.5,-170),
-  new THREE.Vector3(-60, 4.0,-140),
-  new THREE.Vector3(-90,10.0, -90),
-  new THREE.Vector3(-95,14.0, -30),
-  new THREE.Vector3(-70,14.0,  20),
-  new THREE.Vector3(-30, 7.0,  60),
-  new THREE.Vector3( 10, 2.0,  70),
-  new THREE.Vector3( 30, 0.5,  50),
-  new THREE.Vector3( 10, 0.5,  35),
+  new THREE.Vector3( 30, 0.5,  20),
+  new THREE.Vector3( 55, 0.5,   5),
+  // Right-hand sweeper
+  new THREE.Vector3( 75, 0.5, -30),
+  new THREE.Vector3( 85, 0.5, -70),
+  new THREE.Vector3( 78, 0.5,-115),
+  // Hairpin left
+  new THREE.Vector3( 45, 0.5,-155),
+  new THREE.Vector3(  5, 0.5,-168),
+  new THREE.Vector3(-30, 0.5,-165),
+  // Gentle ramp up — spread Y rise over many XZ steps so slope is shallow
+  new THREE.Vector3(-55, 1.5,-148),
+  new THREE.Vector3(-72, 3.0,-128),
+  new THREE.Vector3(-84, 5.0,-105),
+  new THREE.Vector3(-90, 7.0, -80),
+  new THREE.Vector3(-92, 8.5, -55),
+  new THREE.Vector3(-88, 9.5, -30),
+  // Elevated plateau + wide sweeper
+  new THREE.Vector3(-80,10.0,  -5),
+  new THREE.Vector3(-65,10.0,  20),
+  new THREE.Vector3(-45,10.0,  40),
+  // Ramp down — gradual
+  new THREE.Vector3(-25, 7.5,  55),
+  new THREE.Vector3( -5, 5.0,  65),
+  new THREE.Vector3( 15, 2.5,  68),
+  new THREE.Vector3( 28, 0.5,  58),
+  // Return to start
+  new THREE.Vector3( 20, 0.5,  40),
+  new THREE.Vector3(  8, 0.5,  30),
   new THREE.Vector3(  0, 0.5,  20),
 ];
 
@@ -756,11 +765,11 @@ $('restart-btn').addEventListener('click', doRestart);
 // ─────────────────────────────────────────────
 //  PHYSICS
 // ─────────────────────────────────────────────
-const MAX_V   = 38;
-const BOOST_V = 60;
-const ACCEL   = 17;
-const BRAKE   = 26;
-const FRIC    = 0.972;
+const MAX_V   = 33.3;  // 120 km/h
+const BOOST_V = 44.4;  // 160 km/h with nitro
+const ACCEL   = 16;
+const BRAKE   = 28;
+const FRIC    = 0.974;
 const STEER   = 1.9;
 const LAT_F   = 0.80;
 
@@ -803,13 +812,14 @@ function tickPhysics(dt) {
   state.vel.multiplyScalar(FRIC);
 
   // ── Track snap ────────────────────────────
+  // Search full 3D distance so ramps work correctly
   let minD = Infinity, bestT = state.trackT;
   for (let di = -30; di <= 30; di++) {
     let t = (state.trackT * NUM_DIVS + di) % NUM_DIVS;
     if (t < 0) t += NUM_DIVS;
     t /= NUM_DIVS;
     const p = trackCurve.getPointAt(Math.max(0, Math.min(0.9999, t)));
-    const d = Math.sqrt((state.pos.x-p.x)**2 + (state.pos.z-p.z)**2);
+    const d = state.pos.distanceTo(p);
     if (d < minD) { minD = d; bestT = t; }
   }
   state.trackT = bestT;
@@ -818,23 +828,35 @@ function tickPhysics(dt) {
   const ttan = trackFrames.tangents[Math.min(tidx, trackFrames.tangents.length-1)];
   const tpt  = trackCurve.getPointAt(Math.max(0, Math.min(0.9999, bestT)));
 
-  // Target Y: track waypoint Y + track thickness + car half-height
+  // Target Y: track spine Y + track thickness + car ride height
   const targetY = tpt.y + 0.6 + 0.5;
-  if (state.pos.y <= targetY) {
+  if (state.pos.y <= targetY + 0.05) {
     state.pos.y = targetY;
     if (state.vel.y < 0) state.vel.y = 0;
     state.onGround = true;
+    // Bleed off vertical speed on ramps by projecting velocity onto track tangent plane
+    const up = new THREE.Vector3(0, 1, 0);
+    const slopeY = ttan.y;
+    if (Math.abs(slopeY) > 0.05) {
+      // Project velocity onto forward direction to preserve speed on ramps
+      const fwdSpd3 = state.vel.dot(ttan);
+      state.vel.set(ttan.x * fwdSpd3, ttan.y * fwdSpd3, ttan.z * fwdSpd3);
+    }
   } else {
-    state.vel.y -= 18 * dt;
+    state.vel.y -= 22 * dt;  // stronger gravity so car doesn't float
     state.onGround = false;
   }
 
-  // Boost pads
+  // Boost pads — gentle speed bump, not a cannon
   boostMeshes.forEach(bp => {
     if (Math.abs(bestT - bp.t) < 0.018 && minD < TRACK_W/2) {
       boost = 5;
-      state.vel.addScaledVector(ttan, 14);
-      shakeAmt = 0.6;
+      // Only boost if not already at/above max — adds ~20 km/h forward impulse
+      const curFwdSpd = state.vel.dot(ttan);
+      if (curFwdSpd < MAX_V * 1.3) {
+        state.vel.addScaledVector(ttan, 4);
+      }
+      shakeAmt = 0.3;
     }
   });
 
